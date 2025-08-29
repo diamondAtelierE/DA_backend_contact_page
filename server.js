@@ -6,8 +6,16 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Store OTPs temporarily (in production, use Redis or database)
+const otpStore = new Map();
+
 app.use(cors());
 app.use(express.json());
+
+// Generate random OTP
+const generateOTP = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
 
 // Gmail transporter
 const gmailTransporter = nodemailer.createTransport({
@@ -23,13 +31,76 @@ const gmailTransporter = nodemailer.createTransport({
   }
 });
 
-// Outlook transporter
-const outlookTransporter = nodemailer.createTransport({
-  service: 'hotmail',
-  auth: {
-    user: process.env.OUTLOOK_USER,
-    pass: process.env.OUTLOOK_PASS
+// Send OTP route
+app.post('/api/send-otp', async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
   }
+  
+  const otp = generateOTP();
+  otpStore.set(email, { otp, timestamp: Date.now() });
+  
+  const otpMailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: '💎 DIAMOND ATELIER - Email Verification OTP',
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; background: #f8f9fa; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #1a1a1a 0%, #333 100%); color: white; padding: 30px; text-align: center; border-radius: 10px;">
+          <h1 style="margin: 0; font-size: 24px; font-weight: 300; letter-spacing: 2px;">💎 DIAMOND ATELIER</h1>
+          <p style="margin: 10px 0 0 0; opacity: 0.9; font-size: 14px;">Email Verification</p>
+        </div>
+        
+        <div style="background: white; padding: 30px; border-radius: 10px; margin-top: 20px; text-align: center;">
+          <h2 style="color: #333; margin-top: 0;">Your Verification Code</h2>
+          <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; border: 2px dashed #007bff;">
+            <h1 style="color: #007bff; font-size: 32px; margin: 0; letter-spacing: 5px;">${otp}</h1>
+          </div>
+          <p style="color: #666; margin: 20px 0;">Enter this code to verify your email address</p>
+          <p style="color: #999; font-size: 12px;">This code expires in 10 minutes</p>
+        </div>
+      </div>
+    `
+  };
+  
+  try {
+    await gmailTransporter.sendMail(otpMailOptions);
+    res.status(200).json({ message: 'OTP sent successfully!' });
+  } catch (error) {
+    console.error('Error sending OTP:', error);
+    res.status(500).json({ error: 'Failed to send OTP' });
+  }
+});
+
+// Verify OTP route
+app.post('/api/verify-otp', (req, res) => {
+  const { email, otp } = req.body;
+  
+  if (!email || !otp) {
+    return res.status(400).json({ error: 'Email and OTP are required' });
+  }
+  
+  const storedData = otpStore.get(email);
+  
+  if (!storedData) {
+    return res.status(400).json({ error: 'OTP not found or expired' });
+  }
+  
+  // Check if OTP is expired (10 minutes)
+  if (Date.now() - storedData.timestamp > 10 * 60 * 1000) {
+    otpStore.delete(email);
+    return res.status(400).json({ error: 'OTP expired' });
+  }
+  
+  if (storedData.otp !== otp) {
+    return res.status(400).json({ error: 'Invalid OTP' });
+  }
+  
+  // OTP verified, remove from store
+  otpStore.delete(email);
+  res.status(200).json({ message: 'Email verified successfully!' });
 });
 
 app.post('/api/contact', async (req, res) => {
